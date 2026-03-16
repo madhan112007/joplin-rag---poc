@@ -1,0 +1,275 @@
+# joplin-rag-poc
+
+> **Proof of Concept** — Natural language Q&A over a local note collection using Retrieval-Augmented Generation (RAG).  
+> Built as evidence for my [GSoC 2026 proposal](https://summerofcode.withgoogle.com/) to add AI-powered chat to [Joplin](https://joplinapp.org/).
+
+---
+
+## What this does
+
+This script validates the **core RAG pipeline** that the full Joplin plugin will be built on:
+
+1. **Embeds** note text into vectors using `nomic-embed-text` via Ollama (fully local)
+2. **Stores** embeddings + note content in LanceDB (file-based, no server needed)
+3. **Retrieves** the most semantically relevant notes for any question via cosine similarity
+4. **Answers** the question using `llama3` — grounded only in your notes
+
+Everything runs **100% on your machine**. No data leaves your device.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        YOUR MACHINE                             │
+│                                                                 │
+│   ┌─────────────┐    embed()     ┌──────────────────────────┐   │
+│   │  Your Notes │ ────────────▶  │  Ollama (local server)   │   │
+│   │  (3 sample) │                │  nomic-embed-text model  │   │
+│   └─────────────┘                └────────────┬─────────────┘   │
+│                                               │ 768-dim vector  │
+│                                               ▼                 │
+│   ┌─────────────┐  cosine search ┌──────────────────────────┐   │
+│   │  Your Query │ ────────────▶  │  LanceDB  (./poc-db)     │   │
+│   │  (question) │                │  vectors + note text     │   │
+│   └─────────────┘                └────────────┬─────────────┘   │
+│                                               │ top-2 chunks    │
+│                                               ▼                 │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  Prompt = "Answer using ONLY these notes: [chunks]"     │   │
+│   │                          +  your question               │   │
+│   └─────────────────────────────┬───────────────────────────┘   │
+│                                 │                               │
+│                                 ▼                               │
+│                    ┌────────────────────────┐                   │
+│                    │  llama3 (via Ollama)   │                   │
+│                    │  Grounded answer +     │                   │
+│                    │  source note titles    │                   │
+│                    └────────────────────────┘                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## RAG Pipeline Diagram
+
+<!-- SVG diagram — renders on GitHub -->
+<p align="center">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 580" width="860" height="580" font-family="'Segoe UI', Arial, sans-serif">
+
+  <!-- ── OUTER CONTAINER: YOUR MACHINE ── -->
+  <rect x="10" y="10" width="840" height="560" rx="18" fill="#f0f7ff" stroke="#4a90d9" stroke-width="2.5" stroke-dasharray="8,4"/>
+  <text x="34" y="36" font-size="13" font-weight="700" fill="#1a5fa5" letter-spacing="1">YOUR MACHINE  (no internet required)</text>
+
+  <!-- ── BOX 1: Notes ── -->
+  <rect x="40" y="60" width="160" height="80" rx="10" fill="#e8f5e9" stroke="#388e3c" stroke-width="2"/>
+  <text x="120" y="93" text-anchor="middle" font-size="13" font-weight="700" fill="#1b5e20">Your Notes</text>
+  <text x="120" y="112" text-anchor="middle" font-size="11" fill="#2e7d32">3 sample notes</text>
+  <text x="120" y="128" text-anchor="middle" font-size="11" fill="#2e7d32">(title + body)</text>
+
+  <!-- ── BOX 2: embed() ── -->
+  <rect x="280" y="60" width="180" height="80" rx="10" fill="#fff3e0" stroke="#ef6c00" stroke-width="2"/>
+  <text x="370" y="88" text-anchor="middle" font-size="13" font-weight="700" fill="#bf360c">embed()</text>
+  <text x="370" y="107" text-anchor="middle" font-size="11" fill="#e65100">Calls Ollama locally</text>
+  <text x="370" y="123" text-anchor="middle" font-size="11" fill="#e65100">nomic-embed-text</text>
+
+  <!-- ── BOX 3: Ollama ── -->
+  <rect x="560" y="44" width="200" height="112" rx="14" fill="#fce4ec" stroke="#c62828" stroke-width="2"/>
+  <text x="660" y="80" text-anchor="middle" font-size="13" font-weight="700" fill="#b71c1c">Ollama</text>
+  <text x="660" y="98" text-anchor="middle" font-size="11" fill="#c62828">(local server)</text>
+  <text x="660" y="117" text-anchor="middle" font-size="11" fill="#c62828">nomic-embed-text</text>
+  <text x="660" y="134" text-anchor="middle" font-size="11" fill="#c62828">returns 768-dim vector</text>
+
+  <!-- ── BOX 4: LanceDB ── -->
+  <rect x="560" y="230" width="200" height="100" rx="14" fill="#e8eaf6" stroke="#3949ab" stroke-width="2"/>
+  <text x="660" y="268" text-anchor="middle" font-size="13" font-weight="700" fill="#1a237e">LanceDB</text>
+  <text x="660" y="287" text-anchor="middle" font-size="11" fill="#283593">./poc-db  (on disk)</text>
+  <text x="660" y="305" text-anchor="middle" font-size="11" fill="#283593">vectors + note text</text>
+
+  <!-- ── DIAMOND: cosine search ── -->
+  <polygon points="370,240 430,285 370,330 310,285" fill="#fff9c4" stroke="#f9a825" stroke-width="2.5"/>
+  <text x="370" y="280" text-anchor="middle" font-size="11" font-weight="700" fill="#e65100">cosine</text>
+  <text x="370" y="296" text-anchor="middle" font-size="11" font-weight="700" fill="#e65100">search</text>
+
+  <!-- ── BOX 5: Query ── -->
+  <rect x="40" y="245" width="160" height="80" rx="10" fill="#e8f5e9" stroke="#388e3c" stroke-width="2"/>
+  <text x="120" y="278" text-anchor="middle" font-size="13" font-weight="700" fill="#1b5e20">Your Question</text>
+  <text x="120" y="297" text-anchor="middle" font-size="11" fill="#2e7d32">"what did we decide</text>
+  <text x="120" y="313" text-anchor="middle" font-size="11" fill="#2e7d32">about the budget?"</text>
+
+  <!-- ── BOX 6: Prompt Assembly ── -->
+  <rect x="200" y="390" width="300" height="90" rx="10" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2"/>
+  <text x="350" y="418" text-anchor="middle" font-size="13" font-weight="700" fill="#4a148c">Prompt Assembly</text>
+  <text x="350" y="437" text-anchor="middle" font-size="11" fill="#6a1b9a">"Answer ONLY from notes:"</text>
+  <text x="350" y="453" text-anchor="middle" font-size="11" fill="#6a1b9a">[top-2 chunks] + question</text>
+  <text x="350" y="469" text-anchor="middle" font-size="11" fill="#6a1b9a">token count checked first</text>
+
+  <!-- ── BOX 7: llama3 answer ── -->
+  <rect x="590" y="390" width="210" height="90" rx="14" fill="#e0f2f1" stroke="#00695c" stroke-width="2.5"/>
+  <text x="695" y="422" text-anchor="middle" font-size="13" font-weight="700" fill="#004d40">llama3  (Ollama)</text>
+  <text x="695" y="441" text-anchor="middle" font-size="11" fill="#00695c">Grounded answer</text>
+  <text x="695" y="458" text-anchor="middle" font-size="11" fill="#00695c">+ source note titles</text>
+  <text x="695" y="475" text-anchor="middle" font-size="11" fill="#00695c">printed to terminal</text>
+
+  <!-- ── ARROWS ── -->
+
+  <!-- Notes → embed() -->
+  <path d="M200,100 Q240,100 280,100" fill="none" stroke="#555" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="240" y="93" text-anchor="middle" font-size="10" fill="#555">title+body</text>
+
+  <!-- embed() → Ollama -->
+  <path d="M460,100 Q510,100 560,100" fill="none" stroke="#ef6c00" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="510" y="93" text-anchor="middle" font-size="10" fill="#ef6c00">text</text>
+
+  <!-- Ollama → LanceDB (vector stored) -->
+  <path d="M660,156 Q660,193 660,230" fill="none" stroke="#c62828" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="674" y="196" font-size="10" fill="#c62828">vector stored</text>
+
+  <!-- Query → diamond -->
+  <path d="M200,285 Q255,285 310,285" fill="none" stroke="#555" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="252" y="278" text-anchor="middle" font-size="10" fill="#555">embed query</text>
+
+  <!-- diamond → LanceDB -->
+  <path d="M430,285 Q495,285 560,280" fill="none" stroke="#f9a825" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="494" y="272" text-anchor="middle" font-size="10" fill="#b8860b">search index</text>
+
+  <!-- LanceDB → diamond (results back) -->
+  <path d="M560,300 Q495,315 430,305" fill="none" stroke="#3949ab" stroke-width="1.8" stroke-dasharray="5,3" marker-end="url(#arr2)"/>
+  <text x="494" y="322" text-anchor="middle" font-size="10" fill="#3949ab">top-2 chunks</text>
+
+  <!-- diamond → Prompt Assembly -->
+  <path d="M370,330 Q370,360 350,390" fill="none" stroke="#7b1fa2" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="393" y="362" font-size="10" fill="#7b1fa2">chunks</text>
+
+  <!-- Query → Prompt Assembly -->
+  <path d="M120,325 Q120,370 200,415" fill="none" stroke="#388e3c" stroke-width="1.8" stroke-dasharray="5,3" marker-end="url(#arr2)"/>
+  <text x="115" y="380" font-size="10" fill="#388e3c">question</text>
+
+  <!-- Prompt Assembly → llama3 -->
+  <path d="M500,435 Q545,435 590,435" fill="none" stroke="#7b1fa2" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="545" y="428" text-anchor="middle" font-size="10" fill="#7b1fa2">prompt</text>
+
+  <!-- ── ARROW MARKERS ── -->
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1L9 5L1 9" fill="none" stroke="#555" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1L9 5L1 9" fill="none" stroke="#3949ab" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- ── PRIVACY BADGE ── -->
+  <rect x="620" y="530" width="220" height="30" rx="8" fill="#1b5e20" stroke="#388e3c" stroke-width="1.5"/>
+  <text x="730" y="550" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">No data leaves your device</text>
+
+</svg>
+</p>
+
+---
+
+## Prerequisites
+
+| Tool | Purpose | Download |
+|------|---------|----------|
+| Node.js 18+ | Runs the script | [nodejs.org](https://nodejs.org) |
+| Ollama | Runs AI models locally | [ollama.com/download](https://ollama.com/download) |
+| Git | Version control | [git-scm.com](https://git-scm.com) |
+
+---
+
+## Setup & Run
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/madhan112007/joplin-rag-poc
+cd joplin-rag-poc
+```
+
+### 2. Install Node dependencies
+
+```bash
+npm install
+```
+
+### 3. Install Ollama models
+
+```bash
+ollama pull nomic-embed-text   # embedding model (~274 MB)
+ollama pull llama3             # LLM for answers (~4.7 GB)
+```
+
+> Both models run **100% locally**. No API keys needed.
+
+### 4. Run the POC
+
+```bash
+npx tsx poc-rag.ts
+```
+
+---
+
+## Expected Output
+
+```
+Embedding note: Meeting notes Jan...
+Embedding note: RAG paper summary...
+Embedding note: Grocery list...
+
+Indexed 3 notes successfully.
+
+Top results for: "what did we decide about the budget?"
+  [1] Meeting notes Jan: Discussed Q1 budget with Sarah. Decided to cut travel costs by 20%.
+  [2] RAG paper summary: Retrieval-Augmented Generation combines dense retrieval...
+
+Asking llama3...
+
+Answer: Based on the meeting notes, you decided to cut travel costs by 20%.
+```
+
+---
+
+## What I observed
+
+While running this POC, I made three observations that directly influenced the full plugin design:
+
+1. **Semantic search works without keyword overlap** — the question *"what did we decide about the budget?"* correctly retrieved the note containing *"cut travel costs"* even though "budget" doesn't appear in that exact form. This confirms embedding-based retrieval is the right approach for Joplin's use case.
+
+2. **LanceDB needs no configuration** — the database initialised in under 100ms and persisted to a `./poc-db` folder on disk with zero setup. This is ideal for a Joplin plugin where users should not need to run a separate server.
+
+3. **Joplin's `joplin.data.get()` paginates at 100 items** — discovered while reading the Joplin codebase. The real plugin's ingestion pipeline loops with `page` increments until `has_more` is `false`.
+
+---
+
+## Project Structure
+
+```
+joplin-rag-poc/
+├── poc-rag.ts          # Main proof-of-concept script
+├── package.json        # Node dependencies
+├── tsconfig.json       # TypeScript config
+├── poc-db/             # LanceDB database (created on first run)
+└── README.md           # This file
+```
+
+---
+
+## Connection to GSoC Proposal
+
+This POC is the foundation for my GSoC 2026 proposal: **"Chat with Your Note Collection Using AI"** for Joplin.
+
+The full plugin will extend this pipeline with:
+- Native Joplin plugin integration via the Plugin API
+- React chat UI panel inside Joplin
+- Hybrid BM25 + semantic re-ranking for better retrieval
+- Incremental background indexing on note change
+- Support for OpenAI as an alternative LLM backend
+- Source citations with one-click navigation to the original note
+
+---
+
+## License
+
+MIT
